@@ -1,6 +1,14 @@
 CC = mpicc
 CFLAGS = -O -I. -I/opt/local/include
+LDFLAGS = -L/opt/local/lib
+LDLIBS =
 DEPS = time_util.h
+
+UNAME_S = $(shell uname -s)
+
+ifeq ($(UNAME_S),Darwin)
+  LDLIBS += -largp
+endif
 
 %.o: %.c $(DEPS)
 	$(CC) -c -o $@ $< $(CFLAGS)
@@ -8,7 +16,7 @@ DEPS = time_util.h
 all: pingpong
 
 pingpong: pingpong.o
-	$(CC) -o $@ $^ $(CFLAGS) -L/opt/local/lib -largp
+	$(CC) -o $@ $^ $(CFLAGS) $(LDFLAGS) $(LDLIBS)
 
 .PHONY: clean
 
