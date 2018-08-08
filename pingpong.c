@@ -25,6 +25,7 @@ static struct argp_option options[] = {
     { "units",      'u', "s|ms|us|ns", 0, "units to output, default microseconds"},
     { "precision",  'p', "NUM", 0, "number of decimal places, default enough for NS"},
     { "timestamp",  't', 0, 0, "print send timestamps" },
+    { "bytes",      'b', "NUM", 0, "number of bytes to send in each ping message"},
     { 0 }
 };
 
@@ -36,6 +37,7 @@ struct arguments {
     int timestamp;
     int units;
     int precision;
+    int msg_bytes;
 };
 
 static error_t parse_opt(int key, char *arg, struct argp_state *state) {
@@ -56,6 +58,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
             break;
         case 'p': arguments->precision = atoi(arg); break;
         case 't': arguments->timestamp = 1; break;
+        case 'b': arguments->msg_bytes = atoi(arg); break;
 
         default:
             return ARGP_ERR_UNKNOWN;
@@ -74,15 +77,18 @@ int main(int argc, char *argv[])
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
     if (rank == 1) {
-        int buf, iters, pingpong;
+        int iters, pingpong, msg_bytes;
         MPI_Recv(&iters, 1, MPI_INT, 0, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
         MPI_Recv(&pingpong, 1, MPI_INT, 0, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        MPI_Recv(&msg_bytes, 1, MPI_INT, 0, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+        char buf[msg_bytes];
 
         for (int index = 0; index < iters; index++) {
-            MPI_Recv(&buf, 1, MPI_INT, 0, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            MPI_Recv(&buf, msg_bytes, MPI_BYTE, 0, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
             if (pingpong)
-                MPI_Send(&buf, 1, MPI_INT, 0, 1, MPI_COMM_WORLD);
+                MPI_Send(&buf, 1, MPI_BYTE, 0, 1, MPI_COMM_WORLD);
         }
     }
     else if (rank == 0) {
@@ -94,6 +100,7 @@ int main(int argc, char *argv[])
         args.units = TIME_UNITS_US;
         args.precision = -1;
         args.timestamp = 0;
+        args.msg_bytes = 1;
 
         argp_parse(&argp, argc, argv, 0, 0, &args);
 
@@ -110,6 +117,7 @@ int main(int argc, char *argv[])
         int iters = args.iterations + args.skip;
         MPI_Ssend(&iters, 1, MPI_INT, 1, 1, MPI_COMM_WORLD); // wait for receiver to get it
         MPI_Ssend(&args.pingpong, 1, MPI_INT, 1, 1, MPI_COMM_WORLD); // wait for receiver to get it
+        MPI_Ssend(&args.msg_bytes, 1, MPI_INT, 1, 1, MPI_COMM_WORLD); // wait for receiver to get it
 
         int bucket_size_ns = args.frequency * 1000;
 
@@ -118,7 +126,8 @@ int main(int argc, char *argv[])
         struct timespec last_ts, this_ts, diff;
 
         long bucket_ns = bucket_size_ns;
-        int buf, index = 0;
+        char buf[args.msg_bytes];
+        int index = 0;
 
         while (index < iters) {
             clock_gettime(CLOCK_MONOTONIC, &this_ts);
@@ -138,11 +147,11 @@ int main(int argc, char *argv[])
                 send_ts[index].tv_nsec = this_ts.tv_nsec;
 
                 if (args.pingpong) {
-                    MPI_Send(&buf, 1, MPI_INT, 1, 1, MPI_COMM_WORLD);
-                    MPI_Recv(&buf, 1, MPI_INT, 1, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                    MPI_Send(&buf, args.msg_bytes, MPI_BYTE, 1, 1, MPI_COMM_WORLD);
+                    MPI_Recv(&buf, 1, MPI_BYTE, 1, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
                 }
                 else
-                    MPI_Ssend(&buf, 1, MPI_INT, 1, 1, MPI_COMM_WORLD);
+                    MPI_Ssend(&buf, args.msg_bytes, MPI_BYTE, 1, 1, MPI_COMM_WORLD);
 
                 clock_gettime(CLOCK_MONOTONIC, recv_ts + index);
 
