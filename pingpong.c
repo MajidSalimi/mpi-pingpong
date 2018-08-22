@@ -4,6 +4,7 @@
 #include <time.h>
 #include <mpi.h>
 #include <argp.h>
+#include <stdbool.h>
 
 #include "time_util.h"
 
@@ -20,7 +21,8 @@ static char args_doc[] = ""; //"ARG1 ARG2";
 static struct argp_option options[] = {
     { "receive",    'r', 0, 0, "conduct a send/recv, rather than send/wait" },
     { "iterations", 'i', "NUM", 0, "number of iterations to perform, default 20" },
-    { "skip",       's', "NUM", 0, "iters to perform before reporting, default 0" },
+    { "duration",   'd', "NUM", 0, "number of seconds to perform test, overrides iterations" },
+    { "skip",       's', "NUM", 0, "iters to perform before reporting, default 10" },
     { "frequency",  'f', "NUM", 0, "microseconds between send events, default 0" },
     { "units",      'u', "s|ms|us|ns", 0, "units to output, default microseconds"},
     { "precision",  'p', "NUM", 0, "number of decimal places, default enough for NS"},
@@ -31,6 +33,7 @@ static struct argp_option options[] = {
 
 struct arguments {
     int iterations;
+    int duration;
     int frequency;
     int skip;
     int pingpong;
@@ -45,6 +48,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
 
     switch (key) {
         case 'i': arguments->iterations = atoi(arg); break;
+        case 'd': arguments->duration = atoi(arg); break;
         case 'f': arguments->frequency = atoi(arg); break;
         case 's': arguments->skip = atoi(arg); break;
         case 'r': arguments->pingpong = 1; break;
@@ -69,6 +73,17 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
 
 static struct argp argp = { options, parse_opt, args_doc, doc };
 
+#define CONTROL_STOP     0x01
+#define CONTROL_PINGPONG 0x02
+
+#define RESULTS_PAGE_SIZE 1024
+
+struct results_page {
+    struct timespec send_ts[RESULTS_PAGE_SIZE];
+    struct timespec recv_ts[RESULTS_PAGE_SIZE];
+    struct results_page *next;
+};
+
 int main(int argc, char *argv[])
 {
     int rank;
@@ -77,25 +92,30 @@ int main(int argc, char *argv[])
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
     if (rank == 1) {
-        int iters, pingpong, msg_bytes;
-        MPI_Recv(&iters, 1, MPI_INT, 0, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        MPI_Recv(&pingpong, 1, MPI_INT, 0, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        int msg_bytes;
         MPI_Recv(&msg_bytes, 1, MPI_INT, 0, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
         char buf[msg_bytes];
+        char *control = buf;
+        bool stopping = false;
 
-        for (int index = 0; index < iters; index++) {
+        while (!stopping) {
             MPI_Recv(&buf, msg_bytes, MPI_BYTE, 0, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-            if (pingpong)
+            if (*control & CONTROL_PINGPONG)
                 MPI_Send(&buf, 1, MPI_BYTE, 0, 1, MPI_COMM_WORLD);
+
+            if (*control & CONTROL_STOP)
+                stopping = true;
         }
     }
     else if (rank == 0) {
+        // initialize parameters
         struct arguments args;
         args.iterations = 20;
+        args.duration = 0;
         args.frequency = 0;
-        args.skip = 0;
+        args.skip = 10;
         args.pingpong = 0;
         args.units = TIME_UNITS_US;
         args.precision = -1;
@@ -114,28 +134,51 @@ int main(int argc, char *argv[])
             }
         }
 
-        int iters = args.iterations + args.skip;
-        MPI_Ssend(&iters, 1, MPI_INT, 1, 1, MPI_COMM_WORLD); // wait for receiver to get it
-        MPI_Ssend(&args.pingpong, 1, MPI_INT, 1, 1, MPI_COMM_WORLD); // wait for receiver to get it
+        if (args.duration > 0)
+            args.iterations = 0;
+
+        // convey needed parameters to the receiver
         MPI_Ssend(&args.msg_bytes, 1, MPI_INT, 1, 1, MPI_COMM_WORLD); // wait for receiver to get it
 
+        struct results_page *results = NULL, *current_page;
+        struct timespec last_ts, this_ts, diff_ts, start_ts;
+
         int bucket_size_ns = args.frequency * 1000;
-
-        struct timespec *send_ts = (struct timespec *)malloc(iters * sizeof(struct timespec));
-        struct timespec *recv_ts = (struct timespec *)malloc(iters * sizeof(struct timespec));
-        struct timespec last_ts, this_ts, diff;
-
         long bucket_ns = bucket_size_ns;
-        char buf[args.msg_bytes];
-        int index = 0;
 
-        while (index < iters) {
+        char buf[args.msg_bytes];
+        char *control = buf;
+        *control = 0;
+
+        if (args.pingpong)
+            *control |= CONTROL_PINGPONG;
+
+        bool stopping = false;
+        int iters = 0;
+
+        while (!stopping) {
             clock_gettime(CLOCK_MONOTONIC, &this_ts);
 
+            // start the duration clock on the first non-skipd ping
+            if (iters == args.skip) {
+                start_ts.tv_sec = this_ts.tv_sec;
+                start_ts.tv_nsec = this_ts.tv_nsec;
+            }
+
+            // quit after this ping?
+            if (args.duration) {
+                timespec_subtract(&diff_ts, &this_ts, &start_ts);
+
+                if (diff_ts.tv_sec >= args.duration)
+                    stopping = true;
+            }
+            else if (iters > args.iterations + args.skip)
+                stopping = true;
+
             // add to the bucket
-            if (index > 0) {
-                timespec_subtract(&diff, &this_ts, &last_ts);
-                bucket_ns += diff.tv_sec * NANOS + diff.tv_nsec;
+            if (iters > 0) {
+                timespec_subtract(&diff_ts, &this_ts, &last_ts);
+                bucket_ns += diff_ts.tv_sec * NANOS + diff_ts.tv_nsec;
             }
 
             last_ts.tv_sec = this_ts.tv_sec;
@@ -143,8 +186,25 @@ int main(int argc, char *argv[])
 
             // drain the bucket
             if (bucket_ns >= bucket_size_ns) {
-                send_ts[index].tv_sec = this_ts.tv_sec;
-                send_ts[index].tv_nsec = this_ts.tv_nsec;
+                // allocate a new results page if needed
+                if (iters % RESULTS_PAGE_SIZE == 0) {
+                    struct results_page *page = (struct results_page *)malloc(sizeof(struct results_page));
+
+                    if (results == NULL) {
+                        results = page;
+                        current_page = page;
+                    }
+                    else {
+                        current_page->next = page;
+                        current_page = page;
+                    }
+                }
+
+                if (stopping)
+                    *control |= CONTROL_STOP;
+
+                current_page->send_ts[iters % RESULTS_PAGE_SIZE].tv_sec = this_ts.tv_sec;
+                current_page->send_ts[iters % RESULTS_PAGE_SIZE].tv_nsec = this_ts.tv_nsec;
 
                 if (args.pingpong) {
                     MPI_Send(&buf, args.msg_bytes, MPI_BYTE, 1, 1, MPI_COMM_WORLD);
@@ -153,35 +213,40 @@ int main(int argc, char *argv[])
                 else
                     MPI_Ssend(&buf, args.msg_bytes, MPI_BYTE, 1, 1, MPI_COMM_WORLD);
 
-                clock_gettime(CLOCK_MONOTONIC, recv_ts + index);
+                clock_gettime(CLOCK_MONOTONIC, current_page->recv_ts + (iters % RESULTS_PAGE_SIZE));
 
                 bucket_ns -= bucket_size_ns;
-                index++;
+                iters++;
             }
         }
 
-        for (index = args.skip; index < iters; index++) {
-            struct timespec diff_ts;
-            long diff_ns;
-            double diff_f;
+        current_page = results;
+
+        for (int index = 0; index < iters; index++) {
+
+            if (index != 0 && index % RESULTS_PAGE_SIZE == 0) {
+                struct results_page *page = current_page;
+                current_page = current_page->next;
+                free(page);
+            }
+
+            if (index < args.skip)
+                continue;
 
             if (args.timestamp) {
-                timespec_subtract(&diff_ts, send_ts + index, send_ts + args.skip); // difference from first
+                timespec_subtract(&diff_ts, current_page->send_ts + (index % RESULTS_PAGE_SIZE), &start_ts); // difference from first
                 printf("%.*f,",
                     args.precision,
                     nsec_to_double(timespec_to_nsec(&diff_ts), args.units)
                 );
             }
 
-            timespec_subtract(&diff_ts, recv_ts + index, send_ts + index);
+            timespec_subtract(&diff_ts, current_page->recv_ts + (index % RESULTS_PAGE_SIZE), current_page->send_ts + (index % RESULTS_PAGE_SIZE));
             printf("%.*f\n",
                 args.precision,
                 nsec_to_double(timespec_to_nsec(&diff_ts), args.units)
             );
         }
-
-        free(send_ts);
-        free(recv_ts);
     }
 
     MPI_Finalize();
