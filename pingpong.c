@@ -97,16 +97,15 @@ int main(int argc, char *argv[])
 
         char buf[msg_bytes];
         char *control = buf;
-        bool stopping = false;
 
-        while (!stopping) {
+        while (true) {
             MPI_Recv(&buf, msg_bytes, MPI_BYTE, 0, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
             if (*control & CONTROL_PINGPONG)
                 MPI_Send(&buf, 1, MPI_BYTE, 0, 1, MPI_COMM_WORLD);
 
             if (*control & CONTROL_STOP)
-                stopping = true;
+                break;
         }
     }
     else if (rank == 0) {
@@ -153,27 +152,26 @@ int main(int argc, char *argv[])
         if (args.pingpong)
             *control |= CONTROL_PINGPONG;
 
-        bool stopping = false;
         int iters = 0;
 
-        while (!stopping) {
+        while (true) {
             clock_gettime(CLOCK_MONOTONIC, &this_ts);
 
+            // time to quit?
+            if (args.duration > 0) {
+                timespec_subtract(&diff_ts, &this_ts, &start_ts);
+
                 if (nsec_to_double(timespec_to_nsec(&diff_ts), TIME_UNITS_S) >= args.duration)
+                    break;
+            }
+            else if (iters > args.iterations + args.skip)
+                break;
+
             // start the duration clock on the first non-skipd ping
             if (iters == args.skip) {
                 start_ts.tv_sec = this_ts.tv_sec;
                 start_ts.tv_nsec = this_ts.tv_nsec;
             }
-
-            // quit after this ping?
-            if (args.duration) {
-                timespec_subtract(&diff_ts, &this_ts, &start_ts);
-
-                    stopping = true;
-            }
-            else if (iters > args.iterations + args.skip)
-                stopping = true;
 
             // add to the bucket
             if (iters > 0) {
@@ -200,9 +198,6 @@ int main(int argc, char *argv[])
                     }
                 }
 
-                if (stopping)
-                    *control |= CONTROL_STOP;
-
                 current_page->send_ts[iters % RESULTS_PAGE_SIZE].tv_sec = this_ts.tv_sec;
                 current_page->send_ts[iters % RESULTS_PAGE_SIZE].tv_nsec = this_ts.tv_nsec;
 
@@ -220,6 +215,10 @@ int main(int argc, char *argv[])
             }
         }
 
+        // send final control message
+        *control |= CONTROL_STOP;
+        MPI_Send(&buf, args.msg_bytes, MPI_BYTE, 1, 1, MPI_COMM_WORLD);
+ 
         current_page = results;
 
         for (int index = 0; index < iters; index++) {
