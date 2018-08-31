@@ -33,7 +33,7 @@ static struct argp_option options[] = {
 
 struct arguments {
     int iterations;
-    int duration;
+    float duration;
     int frequency;
     int skip;
     int pingpong;
@@ -48,7 +48,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
 
     switch (key) {
         case 'i': arguments->iterations = atoi(arg); break;
-        case 'd': arguments->duration = atoi(arg); break;
+        case 'd': arguments->duration = atof(arg); break;
         case 'f': arguments->frequency = atoi(arg); break;
         case 's': arguments->skip = atoi(arg); break;
         case 'r': arguments->pingpong = 1; break;
@@ -113,7 +113,7 @@ int main(int argc, char *argv[])
         // initialize parameters
         struct arguments args;
         args.iterations = 20;
-        args.duration = 0;
+        args.duration = 0.0;
         args.frequency = 0;
         args.skip = 10;
         args.pingpong = 0;
@@ -159,6 +159,7 @@ int main(int argc, char *argv[])
         while (!stopping) {
             clock_gettime(CLOCK_MONOTONIC, &this_ts);
 
+                if (nsec_to_double(timespec_to_nsec(&diff_ts), TIME_UNITS_S) >= args.duration)
             // start the duration clock on the first non-skipd ping
             if (iters == args.skip) {
                 start_ts.tv_sec = this_ts.tv_sec;
@@ -169,7 +170,6 @@ int main(int argc, char *argv[])
             if (args.duration) {
                 timespec_subtract(&diff_ts, &this_ts, &start_ts);
 
-                if (diff_ts.tv_sec >= args.duration)
                     stopping = true;
             }
             else if (iters > args.iterations + args.skip)
