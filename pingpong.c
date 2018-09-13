@@ -87,6 +87,7 @@ struct results_page {
 int main(int argc, char *argv[])
 {
     int rank;
+    MPI_Request req; // for tracking MPI_Isend
 
     MPI_Init(&argc, &argv);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -102,7 +103,7 @@ int main(int argc, char *argv[])
             MPI_Recv(&buf, msg_bytes, MPI_BYTE, 0, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
             if (*control & CONTROL_PINGPONG)
-                MPI_Send(&buf, 1, MPI_BYTE, 0, 1, MPI_COMM_WORLD);
+                MPI_Isend(&buf, 1, MPI_BYTE, 0, 1, MPI_COMM_WORLD, &req);
 
             if (*control & CONTROL_STOP)
                 break;
@@ -202,10 +203,11 @@ int main(int argc, char *argv[])
                 current_page->send_ts[iters % RESULTS_PAGE_SIZE].tv_nsec = this_ts.tv_nsec;
 
                 if (args.pingpong) {
-                    MPI_Send(&buf, args.msg_bytes, MPI_BYTE, 1, 1, MPI_COMM_WORLD);
+                    MPI_Isend(&buf, args.msg_bytes, MPI_BYTE, 1, 1, MPI_COMM_WORLD, &req);
                     MPI_Recv(&buf, 1, MPI_BYTE, 1, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
                 }
                 else
+                    // use MPI_Ssend here to make sure the receive has started
                     MPI_Ssend(&buf, args.msg_bytes, MPI_BYTE, 1, 1, MPI_COMM_WORLD);
 
                 clock_gettime(CLOCK_MONOTONIC, current_page->recv_ts + (iters % RESULTS_PAGE_SIZE));
