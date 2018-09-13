@@ -165,7 +165,7 @@ int main(int argc, char *argv[])
                 if (nsec_to_double(timespec_to_nsec(&diff_ts), TIME_UNITS_S) >= args.duration)
                     break;
             }
-            else if (iters > args.iterations + args.skip)
+            else if (iters >= args.iterations + args.skip)
                 break;
 
             // start the duration clock on the first non-skipd ping
