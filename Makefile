@@ -1,5 +1,5 @@
 CC = mpicc
-CFLAGS = -O -I. -I/opt/local/include
+CFLAGS = -O -std=gnu99 -I. -I/opt/local/include
 LDFLAGS = -L/opt/local/lib
 LDLIBS =
 DEPS = time_util.h
